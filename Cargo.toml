@@ -1,17 +1,19 @@
+[workspace]
+members = ["codegen"]
+
+[workspace.package]
+edition = "2024"
+
 [package]
 name = "tent"
-description = "A lightweight XML template engine"
+version = "0.2.0"
+edition.workspace = true
+description = "Lightweight HTML/CSS template engine"
 license = "MIT"
-version = "0.0.11"
-authors = ["inkyu <gofiri@gmail.com>"]
-edition = "2021"
+readme = "README.md"
 
-[dependencies.tent_codegen]
-path = "./codegen"
-version = "0.0.11"
+[lib]
+path = "src/lib.rs"
 
-[workspace]
-members = [".", "codegen"]
-
-[dev-dependencies]
-failure = "0.1"
+[dependencies]
+tent_codegen = { path = "codegen", version = "0.2.0" }

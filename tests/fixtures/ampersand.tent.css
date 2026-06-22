@@ -1,0 +1,15 @@
+.btn
+    padding: "8px 16px"
+    borderRadius: "4px"
+    &:hover
+        opacity: "0.8"
+    &:active
+        transform: "scale(0.98)"
+    &.primary
+        background: "blue"
+    &.danger
+        background: "red"
+    &-icon
+        marginRight: "4px"
+    &::before
+        content: "''"
