@@ -33,14 +33,14 @@ dependencies = [
 
 [[package]]
 name = "tent"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "tent_codegen",
 ]
 
 [[package]]
 name = "tent_codegen"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "proc-macro2",
  "quote",

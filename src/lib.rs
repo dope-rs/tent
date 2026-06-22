@@ -1,3 +1,14 @@
+//! Tent is a lightweight HTML/CSS template engine driven by compile-time macros
+//! such as [`html!`]. Templates use significant indentation for nesting; quoted
+//! strings are literal text, `(expr)` interpolates an expression (HTML-escaped by
+//! default), and `!{expr}` interpolates raw, unescaped markup. Control-flow lines
+//! begin with `-`: `- for x in iter`, `- if cond`, and `- else`.
+//!
+//! ```text
+//! ul
+//!   - for f in fortunes
+//!     li (f.message)
+//! ```
 pub use tent_codegen::{
     css, css_body, html, html_body, load_css, load_css_body, load_html, load_html_body,
 };
