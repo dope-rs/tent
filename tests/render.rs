@@ -1,6 +1,9 @@
+mod common;
+
 #[test]
 fn html_static_nesting() {
     let out = tent::html!("div\n  span \"hello\"");
+    assert!(matches!(out, std::borrow::Cow::Borrowed(_)));
     assert_eq!(&*out, "<div><span>hello</span></div>");
 }
 
@@ -29,11 +32,73 @@ fn html_interpolates_expression() {
 
 #[test]
 fn html_body_for_loop_tracks_len() {
-    let body = tent::html_body!("ul\n  - for n in 0u32..3\n    li (n)");
+    let body = tent::html_body!("ul\n  - for n in -1i32..2\n    li (n)");
     let len = body.len();
     let rendered = body.finish();
-    assert_eq!(rendered, "<ul><li>0</li><li>1</li><li>2</li></ul>");
+    assert_eq!(rendered, "<ul><li>-1</li><li>0</li><li>1</li></ul>");
     assert_eq!(len, rendered.len());
+}
+
+#[test]
+fn html_integer_boundaries() {
+    common::integers(&[0, u8::MAX]);
+    common::integers(&[0, u16::MAX]);
+    common::integers(&[0, u32::MAX]);
+    common::integers(&[0, u64::MAX]);
+    common::integers(&[0, usize::MAX]);
+    common::integers(&[i8::MIN, i8::MAX]);
+    common::integers(&[i16::MIN, i16::MAX]);
+    common::integers(&[i32::MIN, i32::MAX]);
+    common::integers(&[i64::MIN, i64::MAX]);
+    common::integers(&[isize::MIN, isize::MAX]);
+}
+
+#[test]
+fn html_owned_output_reuses_capacity() {
+    let message = String::from("é<&>\"'");
+    let rows = [(i32::MIN, message.as_str()), (0, "plain")];
+    let expected = "prefix<div data-id=\"-2147483648\">é&lt;&amp;&gt;&quot;&#x27;-2147483648</div><div data-id=\"0\">plain0</div>";
+    let mut output = String::from("prefix");
+    output
+        .try_reserve_exact(expected.len() - output.len())
+        .expect("output capacity");
+    let pointer = output.as_ptr();
+    let capacity = output.capacity();
+    let mut calls = 0;
+    let rendered = tent::html_into!(
+        "- for (id, message) in &rows\n  div dataId=(id)\n    (message)\n    !{id}",
+        {
+            calls += 1;
+            output
+        },
+    );
+    drop(message);
+    assert_eq!(rendered, expected);
+    assert_eq!(rendered.as_ptr(), pointer);
+    assert_eq!(rendered.capacity(), capacity);
+    assert_eq!(calls, 1);
+}
+
+#[test]
+fn html_output_binding_preserves_caller_names() {
+    let __tent = String::from("<&");
+    let output = tent::html_into!("p title=(__tent) (__tent)", String::new());
+    assert_eq!(output, "<p title=\"&lt;&amp;\">&lt;&amp;</p>");
+    assert_eq!(__tent, "<&");
+    assert_eq!(tent::html!("p (__tent)"), "<p>&lt;&amp;</p>");
+    assert_eq!(tent::html_body!("p (__tent)").finish(), "<p>&lt;&amp;</p>");
+    let output = tent::html_into!(
+        "- for __tent in [\"<\", \"&\"]\n  p (__tent)",
+        String::new(),
+    );
+    assert_eq!(output, "<p>&lt;</p><p>&amp;</p>");
+}
+
+#[test]
+fn html_static_output_appends_to_owned_string() {
+    let output = String::from("prefix");
+    let rendered = tent::html_into!("p \"text\"", output);
+    assert_eq!(rendered, "prefix<p>text</p>");
 }
 
 #[test]

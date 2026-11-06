@@ -213,18 +213,20 @@ impl Node {
 pub(super) struct Css;
 
 impl Css {
-    fn render(roots: Vec<Item>) -> String {
+    fn render(roots: Vec<Item>) -> Result<String, String> {
         let mut flat = Vec::new();
         for item in roots {
             let (declaration, mut nodes) = item.flatten(None);
-            debug_assert!(declaration.is_none(), "CSS: top-level declaration");
+            if declaration.is_some() {
+                return Err("CSS: top-level declaration".to_string());
+            }
             flat.append(&mut nodes);
         }
         let mut css = String::new();
         for item in &flat {
             item.render(&mut css);
         }
-        css
+        Ok(css)
     }
 }
 
@@ -265,12 +267,12 @@ impl Language for Css {
     }
 
     fn emit_markup(roots: Vec<Item>) -> Result<TokenStream, String> {
-        let css = Self::render(roots);
+        let css = Self::render(roots)?;
         Ok(quote! { #css })
     }
 
     fn emit_body(roots: Vec<Item>) -> Result<TokenStream, String> {
-        let css = Self::render(roots);
+        let css = Self::render(roots)?;
         Ok(quote! { ::tent::Body::from_static(#css) })
     }
 }

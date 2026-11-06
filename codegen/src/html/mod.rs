@@ -1,5 +1,5 @@
-use proc_macro2::TokenStream;
-use quote::quote;
+use proc_macro2::{Span, TokenStream};
+use quote::{quote, quote_spanned};
 
 use crate::Language;
 use crate::indent::IndentNode;
@@ -42,13 +42,21 @@ impl Content {
             return quote! { ::std::borrow::Cow::<'static, str>::Borrowed(#html) };
         }
         let capacity = self.static_bytes();
+        let output = self.emit(
+            quote! { ::std::string::String },
+            quote! { ::std::string::String::with_capacity(#capacity) },
+        );
+        quote! { ::std::borrow::Cow::<'static, str>::Owned(#output) }
+    }
+
+    fn emit(&self, ty: TokenStream, output: TokenStream) -> TokenStream {
         let stmts = self.statements();
-        quote! {
+        quote_spanned! {Span::mixed_site()=>
             {
                 use ::tent::{Html as _, Sink as _};
-                let mut __tent = ::std::string::String::with_capacity(#capacity);
+                let mut __tent: #ty = #output;
                 #(#stmts)*
-                ::std::borrow::Cow::<'static, str>::Owned(__tent)
+                __tent
             }
         }
     }
@@ -59,15 +67,10 @@ impl Content {
             return quote! { ::tent::Body::from_static(#html) };
         }
         let parts = self.parts().max(1);
-        let stmts = self.statements();
-        quote! {
-            {
-                use ::tent::{Html as _, Sink as _};
-                let mut __tent = ::tent::Body::with_capacity(#parts);
-                #(#stmts)*
-                __tent
-            }
-        }
+        self.emit(
+            quote! { ::tent::Body },
+            quote! { ::tent::Body::with_capacity(#parts) },
+        )
     }
 
     fn statements(&self) -> Vec<TokenStream> {
@@ -116,13 +119,14 @@ impl Content {
                 None => {
                     Self::flush(accum, stmts);
                     let expr = Self::expr(text);
-                    stmts.push(quote! { (#expr).escaped(&mut __tent); });
+                    stmts
+                        .push(quote_spanned! {Span::mixed_site()=> (#expr).escaped(&mut __tent); });
                 }
             },
             Self::RawText(text) => {
                 Self::flush(accum, stmts);
                 let expr = Self::expr(text);
-                stmts.push(quote! { (#expr).raw(&mut __tent); });
+                stmts.push(quote_spanned! {Span::mixed_site()=> (#expr).raw(&mut __tent); });
             }
             Self::For {
                 var,
@@ -152,7 +156,7 @@ impl Content {
                 }
             }
             Self::ElseIf { .. } | Self::Else { .. } => {
-                unreachable!("else branches are folded into If by merge_else")
+                unreachable!("branch")
             }
         }
     }
@@ -178,7 +182,7 @@ impl Content {
                 let body = Self::block(contents);
                 quote! { { #(#body)* } }
             }
-            _ => unreachable!("else branch is always If or Else"),
+            _ => unreachable!("branch"),
         }
     }
 
@@ -208,7 +212,8 @@ impl Content {
                 None => {
                     Self::flush(accum, stmts);
                     let expr = Self::expr(value);
-                    stmts.push(quote! { (#expr).escaped(&mut __tent); });
+                    stmts
+                        .push(quote_spanned! {Span::mixed_site()=> (#expr).escaped(&mut __tent); });
                 }
             }
             accum.push('"');
@@ -219,7 +224,7 @@ impl Content {
     fn flush(accum: &mut String, stmts: &mut Vec<TokenStream>) {
         if !accum.is_empty() {
             let text = std::mem::take(accum);
-            stmts.push(quote! { __tent.put_static(#text); });
+            stmts.push(quote_spanned! {Span::mixed_site()=> __tent.put_static(#text); });
         }
     }
 
@@ -320,7 +325,7 @@ impl Content {
                 }
             }
             Self::Text(text) => out.push_str(&Text::unquote(text)),
-            _ => unreachable!("render_static on a non-static node"),
+            _ => unreachable!("static"),
         }
     }
 
@@ -475,7 +480,7 @@ impl Node {
                     contents,
                 }) = iter.next()
                 else {
-                    unreachable!()
+                    unreachable!("branch")
                 };
                 let else_branch = Self::take_else(iter);
                 Some(Box::new(Content::If {
@@ -503,6 +508,13 @@ enum State {
 pub(super) struct Html;
 
 impl Html {
+    pub(super) fn emit_into(
+        roots: Vec<Content>,
+        output: TokenStream,
+    ) -> Result<TokenStream, String> {
+        Ok(Self::root(roots)?.emit(quote! { ::std::string::String }, output))
+    }
+
     fn attr_name(name: &str) -> String {
         if name == "viewBox" {
             name.to_string()
@@ -553,7 +565,7 @@ impl Html {
                 && matches!(iter.peek(), Some(Token::Group { .. }))
             {
                 let Some(Token::Group { inner, .. }) = iter.next() else {
-                    unreachable!()
+                    unreachable!("group")
                 };
                 out.push(Token::RawGroup(inner));
             } else {

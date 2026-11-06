@@ -10,7 +10,7 @@
 //!     li (f.message)
 //! ```
 pub use tent_codegen::{
-    css, css_body, html, html_body, load_css, load_css_body, load_html, load_html_body,
+    css, css_body, html, html_body, html_into, load_css, load_css_body, load_html, load_html_body,
 };
 
 enum Segment {
@@ -64,10 +64,12 @@ pub trait Sink {
 }
 
 impl Sink for String {
+    #[inline]
     fn put_static(&mut self, text: &'static str) {
         self.push_str(text);
     }
 
+    #[inline]
     fn put_owned(&mut self, text: &str) {
         self.push_str(text);
     }
@@ -87,7 +89,9 @@ impl Sink for Body {
 
 pub trait Html {
     fn escaped<S: Sink>(&self, out: &mut S);
-    fn raw<S: Sink>(&self, out: &mut S);
+    fn raw<S: Sink>(&self, out: &mut S) {
+        self.escaped(out);
+    }
 }
 
 impl Html for str {
@@ -158,108 +162,64 @@ impl Html for bool {
     fn escaped<S: Sink>(&self, out: &mut S) {
         out.put_static(if *self { "true" } else { "false" });
     }
-
-    fn raw<S: Sink>(&self, out: &mut S) {
-        out.put_static(if *self { "true" } else { "false" });
-    }
 }
 
 impl Html for u8 {
     fn escaped<S: Sink>(&self, out: &mut S) {
-        out.put_owned(&self.to_string());
-    }
-
-    fn raw<S: Sink>(&self, out: &mut S) {
-        out.put_owned(&self.to_string());
+        out.put_owned(self.format_into(&mut core::fmt::NumBuffer::new()));
     }
 }
 
 impl Html for u16 {
     fn escaped<S: Sink>(&self, out: &mut S) {
-        out.put_owned(&self.to_string());
-    }
-
-    fn raw<S: Sink>(&self, out: &mut S) {
-        out.put_owned(&self.to_string());
+        out.put_owned(self.format_into(&mut core::fmt::NumBuffer::new()));
     }
 }
 
 impl Html for u32 {
     fn escaped<S: Sink>(&self, out: &mut S) {
-        out.put_owned(&self.to_string());
-    }
-
-    fn raw<S: Sink>(&self, out: &mut S) {
-        out.put_owned(&self.to_string());
+        out.put_owned(self.format_into(&mut core::fmt::NumBuffer::new()));
     }
 }
 
 impl Html for u64 {
     fn escaped<S: Sink>(&self, out: &mut S) {
-        out.put_owned(&self.to_string());
-    }
-
-    fn raw<S: Sink>(&self, out: &mut S) {
-        out.put_owned(&self.to_string());
+        out.put_owned(self.format_into(&mut core::fmt::NumBuffer::new()));
     }
 }
 
 impl Html for usize {
     fn escaped<S: Sink>(&self, out: &mut S) {
-        out.put_owned(&self.to_string());
-    }
-
-    fn raw<S: Sink>(&self, out: &mut S) {
-        out.put_owned(&self.to_string());
+        out.put_owned(self.format_into(&mut core::fmt::NumBuffer::new()));
     }
 }
 
 impl Html for i8 {
     fn escaped<S: Sink>(&self, out: &mut S) {
-        out.put_owned(&self.to_string());
-    }
-
-    fn raw<S: Sink>(&self, out: &mut S) {
-        out.put_owned(&self.to_string());
+        out.put_owned(self.format_into(&mut core::fmt::NumBuffer::new()));
     }
 }
 
 impl Html for i16 {
     fn escaped<S: Sink>(&self, out: &mut S) {
-        out.put_owned(&self.to_string());
-    }
-
-    fn raw<S: Sink>(&self, out: &mut S) {
-        out.put_owned(&self.to_string());
+        out.put_owned(self.format_into(&mut core::fmt::NumBuffer::new()));
     }
 }
 
 impl Html for i32 {
     fn escaped<S: Sink>(&self, out: &mut S) {
-        out.put_owned(&self.to_string());
-    }
-
-    fn raw<S: Sink>(&self, out: &mut S) {
-        out.put_owned(&self.to_string());
+        out.put_owned(self.format_into(&mut core::fmt::NumBuffer::new()));
     }
 }
 
 impl Html for i64 {
     fn escaped<S: Sink>(&self, out: &mut S) {
-        out.put_owned(&self.to_string());
-    }
-
-    fn raw<S: Sink>(&self, out: &mut S) {
-        out.put_owned(&self.to_string());
+        out.put_owned(self.format_into(&mut core::fmt::NumBuffer::new()));
     }
 }
 
 impl Html for isize {
     fn escaped<S: Sink>(&self, out: &mut S) {
-        out.put_owned(&self.to_string());
-    }
-
-    fn raw<S: Sink>(&self, out: &mut S) {
-        out.put_owned(&self.to_string());
+        out.put_owned(self.format_into(&mut core::fmt::NumBuffer::new()));
     }
 }

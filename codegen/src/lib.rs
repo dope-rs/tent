@@ -6,6 +6,7 @@ mod text;
 
 use proc_macro::TokenStream;
 use proc_macro2::{self, Span};
+use syn::parse::Parser;
 
 use crate::css::Css;
 use crate::html::Html;
@@ -75,6 +76,28 @@ impl Compiler {
 #[proc_macro]
 pub fn html(input: TokenStream) -> TokenStream {
     Compiler::drive::<Html>(input, Origin::Inline, Mode::Markup)
+}
+
+#[proc_macro]
+pub fn html_into(input: TokenStream) -> TokenStream {
+    let parser = |input: syn::parse::ParseStream<'_>| {
+        let literal = input.parse::<syn::LitStr>()?;
+        input.parse::<syn::Token![,]>()?;
+        let output = input.parse::<syn::Expr>()?;
+        input.parse::<Option<syn::Token![,]>>()?;
+        Ok((literal, output))
+    };
+    let (literal, output) = match parser.parse(input) {
+        Ok(input) => input,
+        Err(error) => return error.to_compile_error().into(),
+    };
+    let result = Html::parse(&literal.value())
+        .map(Indent::build)
+        .and_then(|roots| Html::emit_into(roots, quote::quote! { #output }));
+    match result {
+        Ok(tokens) => tokens.into(),
+        Err(message) => Compiler::error(literal.span(), message),
+    }
 }
 
 #[proc_macro]
