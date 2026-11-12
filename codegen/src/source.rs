@@ -1,13 +1,13 @@
 use std::str::FromStr;
 
-use proc_macro::{TokenStream, TokenTree};
+use proc_macro2::{Group, Literal, TokenStream, TokenTree};
 
 pub(super) enum Token {
     Ident(String),
     Punct(char),
-    Literal(String),
-    Group { delimited: String, inner: String },
-    RawGroup(String),
+    Literal(Literal),
+    Group(Group),
+    RawGroup(TokenStream),
 }
 
 impl Token {
@@ -15,18 +15,17 @@ impl Token {
         match tree {
             TokenTree::Ident(ident) => Self::Ident(ident.to_string()),
             TokenTree::Punct(punct) => Self::Punct(punct.as_char()),
-            TokenTree::Literal(literal) => Self::Literal(literal.to_string()),
-            TokenTree::Group(group) => Self::Group {
-                delimited: group.to_string(),
-                inner: group.stream().to_string(),
-            },
+            TokenTree::Literal(literal) => Self::Literal(literal),
+            TokenTree::Group(group) => Self::Group(group),
         }
     }
 
     pub(super) fn describe(&self) -> String {
         match self {
-            Self::Ident(text) | Self::Literal(text) | Self::RawGroup(text) => text.clone(),
-            Self::Group { delimited, .. } => delimited.clone(),
+            Self::Ident(text) => text.clone(),
+            Self::Literal(literal) => literal.to_string(),
+            Self::Group(group) => group.to_string(),
+            Self::RawGroup(tokens) => tokens.to_string(),
             Self::Punct(ch) => ch.to_string(),
         }
     }
@@ -56,7 +55,11 @@ impl Source {
     }
 
     pub(super) fn tokenize(text: &str) -> Result<Vec<Token>, String> {
-        let stream = TokenStream::from_str(text).map_err(|e| format!("failed to tokenize: {e}"))?;
-        Ok(stream.into_iter().map(Token::from_tree).collect())
+        let stream = proc_macro::TokenStream::from_str(text)
+            .map_err(|e| format!("failed to tokenize: {e}"))?;
+        Ok(TokenStream::from(stream)
+            .into_iter()
+            .map(Token::from_tree)
+            .collect())
     }
 }

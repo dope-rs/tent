@@ -37,7 +37,7 @@ struct Compiler;
 
 impl Compiler {
     fn run<L: Language>(input: &str, mode: Mode) -> Result<proc_macro2::TokenStream, String> {
-        let roots = Indent::build(L::parse(input)?);
+        let roots = Indent::try_build(L::parse(input)?)?;
         match mode {
             Mode::Markup => L::emit_markup(roots),
             Mode::Body => L::emit_body(roots),
@@ -53,8 +53,15 @@ impl Compiler {
         let source = match origin {
             Origin::Inline => literal.value(),
             Origin::File => {
-                let dir =
-                    std::env::var("CARGO_MANIFEST_DIR").expect("tent: CARGO_MANIFEST_DIR unset");
+                let dir = match std::env::var("CARGO_MANIFEST_DIR") {
+                    Ok(dir) => dir,
+                    Err(error) => {
+                        return Self::error(
+                            span,
+                            format!("tent: CARGO_MANIFEST_DIR unset: {error:?}"),
+                        );
+                    }
+                };
                 let path = std::path::Path::new(&dir).join(literal.value());
                 match std::fs::read_to_string(&path) {
                     Ok(text) => text,
@@ -92,7 +99,7 @@ pub fn html_into(input: TokenStream) -> TokenStream {
         Err(error) => return error.to_compile_error().into(),
     };
     let result = Html::parse(&literal.value())
-        .map(Indent::build)
+        .and_then(Indent::try_build)
         .and_then(|roots| Html::emit_into(roots, quote::quote! { #output }));
     match result {
         Ok(tokens) => tokens.into(),

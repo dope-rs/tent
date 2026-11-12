@@ -1,4 +1,4 @@
-use proc_macro2::{Span, TokenStream};
+use proc_macro2::{Literal, Span, TokenStream, TokenTree};
 use quote::{quote, quote_spanned};
 
 use crate::Language;
@@ -6,28 +6,72 @@ use crate::indent::IndentNode;
 use crate::source::{Source, Token};
 use crate::text::Text;
 
+pub(super) enum Value {
+    Static(String),
+    Dynamic(TokenStream),
+}
+
+impl Value {
+    fn from_literal(literal: Literal) -> Self {
+        if let Some(text) = Text::unquote(&literal) {
+            Self::Static(text)
+        } else {
+            Self::Dynamic(TokenTree::Literal(literal).into())
+        }
+    }
+
+    fn from_tokens(tokens: TokenStream) -> Self {
+        let mut iter = tokens.clone().into_iter();
+        if let Some(TokenTree::Literal(literal)) = iter.next()
+            && iter.next().is_none()
+            && let Some(text) = Text::unquote(&literal)
+        {
+            Self::Static(text)
+        } else {
+            Self::Dynamic(tokens)
+        }
+    }
+
+    fn literal(&self) -> Option<&str> {
+        match self {
+            Self::Static(text) => Some(text),
+            Self::Dynamic(_) => None,
+        }
+    }
+
+    fn collect(&self, accum: &mut String, stmts: &mut Vec<TokenStream>) {
+        match self {
+            Self::Static(text) => accum.push_str(text),
+            Self::Dynamic(expr) => {
+                Content::flush(accum, stmts);
+                stmts.push(quote_spanned! {Span::mixed_site()=> (#expr).escaped(&mut __tent); });
+            }
+        }
+    }
+}
+
 pub(super) enum Content {
     Fragment(Vec<Self>),
     Element {
         tag: String,
         classes: Vec<String>,
-        properties: Vec<(String, String)>,
+        properties: Vec<(String, Option<Value>)>,
         contents: Vec<Self>,
     },
-    Text(String),
-    RawText(String),
+    Text(Value),
+    RawText(TokenStream),
     For {
-        var: String,
-        iter: String,
+        var: TokenStream,
+        iter: TokenStream,
         contents: Vec<Self>,
     },
     If {
-        condition: String,
+        condition: TokenStream,
         contents: Vec<Self>,
         else_branch: Option<Box<Self>>,
     },
     ElseIf {
-        condition: String,
+        condition: TokenStream,
         contents: Vec<Self>,
     },
     Else {
@@ -37,20 +81,27 @@ pub(super) enum Content {
 
 impl Content {
     pub(super) fn to_markup(&self) -> TokenStream {
+        let (html, stmts) = self.statements();
         if self.is_static() {
-            let html = self.render_static();
             return quote! { ::std::borrow::Cow::<'static, str>::Borrowed(#html) };
         }
         let capacity = self.static_bytes();
-        let output = self.emit(
+        let output = Self::emit(
             quote! { ::std::string::String },
             quote! { ::std::string::String::with_capacity(#capacity) },
+            html,
+            stmts,
         );
         quote! { ::std::borrow::Cow::<'static, str>::Owned(#output) }
     }
 
-    fn emit(&self, ty: TokenStream, output: TokenStream) -> TokenStream {
-        let stmts = self.statements();
+    fn emit(
+        ty: TokenStream,
+        output: TokenStream,
+        mut accum: String,
+        mut stmts: Vec<TokenStream>,
+    ) -> TokenStream {
+        Self::flush(&mut accum, &mut stmts);
         quote_spanned! {Span::mixed_site()=>
             {
                 use ::tent::{Html as _, Sink as _};
@@ -62,23 +113,24 @@ impl Content {
     }
 
     pub(super) fn to_body(&self) -> TokenStream {
+        let (html, stmts) = self.statements();
         if self.is_static() {
-            let html = self.render_static();
             return quote! { ::tent::Body::from_static(#html) };
         }
         let parts = self.parts().max(1);
-        self.emit(
+        Self::emit(
             quote! { ::tent::Body },
             quote! { ::tent::Body::with_capacity(#parts) },
+            html,
+            stmts,
         )
     }
 
-    fn statements(&self) -> Vec<TokenStream> {
+    fn statements(&self) -> (String, Vec<TokenStream>) {
         let mut accum = String::new();
         let mut stmts = Vec::new();
         self.collect(&mut accum, &mut stmts);
-        Self::flush(&mut accum, &mut stmts);
-        stmts
+        (accum, stmts)
     }
 
     fn block(contents: &[Self]) -> Vec<TokenStream> {
@@ -114,18 +166,9 @@ impl Content {
                     accum.push('>');
                 }
             }
-            Self::Text(text) => match Self::literal(text) {
-                Some(literal) => accum.push_str(&literal),
-                None => {
-                    Self::flush(accum, stmts);
-                    let expr = Self::expr(text);
-                    stmts
-                        .push(quote_spanned! {Span::mixed_site()=> (#expr).escaped(&mut __tent); });
-                }
-            },
-            Self::RawText(text) => {
+            Self::Text(value) => value.collect(accum, stmts),
+            Self::RawText(expr) => {
                 Self::flush(accum, stmts);
-                let expr = Self::expr(text);
                 stmts.push(quote_spanned! {Span::mixed_site()=> (#expr).raw(&mut __tent); });
             }
             Self::For {
@@ -134,8 +177,6 @@ impl Content {
                 contents,
             } => {
                 Self::flush(accum, stmts);
-                let var = Self::expr(var);
-                let iter = Self::expr(iter);
                 let body = Self::block(contents);
                 stmts.push(quote! { for #var in #iter { #(#body)* } });
             }
@@ -145,19 +186,26 @@ impl Content {
                 else_branch,
             } => {
                 Self::flush(accum, stmts);
-                let condition = Self::expr(condition);
-                let body = Self::block(contents);
-                match else_branch {
-                    Some(branch) => {
-                        let tail = branch.else_arm();
-                        stmts.push(quote! { if #condition { #(#body)* } else #tail });
-                    }
-                    None => stmts.push(quote! { if #condition { #(#body)* } }),
-                }
+                stmts.push(Self::if_branch(condition, contents, else_branch.as_deref()));
             }
             Self::ElseIf { .. } | Self::Else { .. } => {
                 unreachable!("branch")
             }
+        }
+    }
+
+    fn if_branch(
+        condition: &TokenStream,
+        contents: &[Self],
+        else_branch: Option<&Self>,
+    ) -> TokenStream {
+        let body = Self::block(contents);
+        match else_branch {
+            Some(branch) => {
+                let tail = branch.else_arm();
+                quote! { if #condition { #(#body)* } else #tail }
+            }
+            None => quote! { if #condition { #(#body)* } },
         }
     }
 
@@ -167,17 +215,7 @@ impl Content {
                 condition,
                 contents,
                 else_branch,
-            } => {
-                let condition = Self::expr(condition);
-                let body = Self::block(contents);
-                match else_branch {
-                    Some(branch) => {
-                        let tail = branch.else_arm();
-                        quote! { if #condition { #(#body)* } else #tail }
-                    }
-                    None => quote! { if #condition { #(#body)* } },
-                }
-            }
+            } => Self::if_branch(condition, contents, else_branch.as_deref()),
             Self::Else { contents } => {
                 let body = Self::block(contents);
                 quote! { { #(#body)* } }
@@ -189,7 +227,7 @@ impl Content {
     fn open_tag(
         tag: &str,
         classes: &[String],
-        properties: &[(String, String)],
+        properties: &[(String, Option<Value>)],
         accum: &mut String,
         stmts: &mut Vec<TokenStream>,
     ) {
@@ -203,19 +241,11 @@ impl Content {
         for (name, value) in properties {
             accum.push(' ');
             accum.push_str(name);
-            if value.is_empty() {
+            let Some(value) = value else {
                 continue;
-            }
+            };
             accum.push_str("=\"");
-            match Self::literal(value) {
-                Some(literal) => accum.push_str(&literal),
-                None => {
-                    Self::flush(accum, stmts);
-                    let expr = Self::expr(value);
-                    stmts
-                        .push(quote_spanned! {Span::mixed_site()=> (#expr).escaped(&mut __tent); });
-                }
-            }
+            value.collect(accum, stmts);
             accum.push('"');
         }
         accum.push('>');
@@ -226,15 +256,6 @@ impl Content {
             let text = std::mem::take(accum);
             stmts.push(quote_spanned! {Span::mixed_site()=> __tent.put_static(#text); });
         }
-    }
-
-    fn literal(text: &str) -> Option<String> {
-        text.starts_with('"').then(|| Text::unquote(text))
-    }
-
-    fn expr(text: &str) -> TokenStream {
-        text.parse()
-            .expect("tent: dynamic expression failed to tokenize")
     }
 
     fn is_void(tag: &str) -> bool {
@@ -267,65 +288,15 @@ impl Content {
             } => {
                 properties
                     .iter()
-                    .all(|(_, value)| value.is_empty() || value.starts_with('"'))
+                    .all(|(_, value)| value.as_ref().is_none_or(|v| v.literal().is_some()))
                     && contents.iter().all(Self::is_static)
             }
-            Self::Text(text) => text.starts_with('"'),
+            Self::Text(value) => value.literal().is_some(),
             Self::RawText(_)
             | Self::For { .. }
             | Self::If { .. }
             | Self::ElseIf { .. }
             | Self::Else { .. } => false,
-        }
-    }
-
-    fn render_static(&self) -> String {
-        let mut out = String::new();
-        self.render_into(&mut out);
-        out
-    }
-
-    fn render_into(&self, out: &mut String) {
-        match self {
-            Self::Fragment(children) => {
-                for child in children {
-                    child.render_into(out);
-                }
-            }
-            Self::Element {
-                tag,
-                classes,
-                properties,
-                contents,
-            } => {
-                out.push('<');
-                out.push_str(tag);
-                if !classes.is_empty() {
-                    out.push_str(" class=\"");
-                    out.push_str(&classes.join(" "));
-                    out.push('"');
-                }
-                for (name, value) in properties {
-                    out.push(' ');
-                    out.push_str(name);
-                    if !value.is_empty() {
-                        out.push_str("=\"");
-                        out.push_str(&Text::unquote(value));
-                        out.push('"');
-                    }
-                }
-                out.push('>');
-                if !Self::is_void(tag) {
-                    for child in contents {
-                        child.render_into(out);
-                    }
-                    out.push_str("</");
-                    out.push_str(tag);
-                    out.push('>');
-                }
-            }
-            Self::Text(text) => out.push_str(&Text::unquote(text)),
-            _ => unreachable!("static"),
         }
     }
 
@@ -345,11 +316,8 @@ impl Content {
                 }
                 for (name, value) in properties {
                     count += 1 + name.len();
-                    if !value.is_empty() {
-                        count += 3;
-                        if value.starts_with('"') {
-                            count += Text::unquote(value).len();
-                        }
+                    if let Some(value) = value {
+                        count += 3 + value.literal().map_or(0, str::len);
                     }
                 }
                 if !Self::is_void(tag) {
@@ -358,13 +326,7 @@ impl Content {
                 }
                 count
             }
-            Self::Text(text) => {
-                if text.starts_with('"') {
-                    Text::unquote(text).len()
-                } else {
-                    0
-                }
-            }
+            Self::Text(value) => value.literal().map_or(0, str::len),
             Self::RawText(_) | Self::ElseIf { .. } => 0,
             Self::For { contents, .. } | Self::Else { contents } => {
                 contents.iter().map(Self::static_bytes).sum()
@@ -391,7 +353,7 @@ impl Content {
             } => {
                 let dynamic = properties
                     .iter()
-                    .filter(|(_, v)| !v.is_empty() && !v.starts_with('"'))
+                    .filter(|(_, v)| matches!(v, Some(Value::Dynamic(_))))
                     .count();
                 2 + dynamic + contents.iter().map(Self::parts).sum::<usize>()
             }
@@ -429,25 +391,26 @@ impl IndentNode for Node {
         self.content
     }
 
-    fn adopt(&mut self, children: Vec<Content>) {
+    fn try_adopt(&mut self, children: Vec<Content>) -> Result<(), String> {
         let slot = match &mut self.content {
             Content::Element { contents, .. } if contents.is_empty() => contents,
             Content::For { contents, .. }
             | Content::If { contents, .. }
             | Content::ElseIf { contents, .. }
             | Content::Else { contents } => contents,
-            _ => panic!("HTML: this line cannot hold a nested block"),
+            _ => return Err("HTML: this line cannot hold a nested block".to_string()),
         };
         *slot = children;
+        Ok(())
     }
 
-    fn finish_siblings(siblings: Vec<Content>) -> Vec<Content> {
-        Self::merge_else(siblings)
+    fn try_finish_siblings(siblings: Vec<Content>) -> Result<Vec<Content>, String> {
+        Self::try_merge_else(siblings)
     }
 }
 
 impl Node {
-    fn merge_else(siblings: Vec<Content>) -> Vec<Content> {
+    fn try_merge_else(siblings: Vec<Content>) -> Result<Vec<Content>, String> {
         let mut out = Vec::with_capacity(siblings.len());
         let mut iter = siblings.into_iter().peekable();
         while let Some(item) = iter.next() {
@@ -464,10 +427,13 @@ impl Node {
                         else_branch,
                     });
                 }
+                Content::ElseIf { .. } | Content::Else { .. } => {
+                    return Err("HTML: else without a preceding if".to_string());
+                }
                 other => out.push(other),
             }
         }
-        out
+        Ok(out)
     }
 
     fn take_else(
@@ -512,7 +478,13 @@ impl Html {
         roots: Vec<Content>,
         output: TokenStream,
     ) -> Result<TokenStream, String> {
-        Ok(Self::root(roots)?.emit(quote! { ::std::string::String }, output))
+        let (html, stmts) = Self::root(roots)?.statements();
+        Ok(Content::emit(
+            quote! { ::std::string::String },
+            output,
+            html,
+            stmts,
+        ))
     }
 
     fn attr_name(name: &str) -> String {
@@ -524,18 +496,23 @@ impl Html {
     }
 
     fn directive(num: usize, level: usize, trimmed: &str) -> Result<Option<Node>, String> {
+        let expression = |text: &str| {
+            text.trim()
+                .parse::<TokenStream>()
+                .map_err(|error| format!("HTML line {num}: failed to tokenize: {error}"))
+        };
         let content = if let Some(rest) = trimmed.strip_prefix("- for ") {
             let split = rest.find(" in ").ok_or_else(|| {
                 format!("HTML line {num}: `- for VAR in EXPR` expected, got `{trimmed}`")
             })?;
             Content::For {
-                var: rest[..split].trim().to_string(),
-                iter: rest[split + 4..].trim().to_string(),
+                var: expression(&rest[..split])?,
+                iter: expression(&rest[split + 4..])?,
                 contents: Vec::new(),
             }
         } else if let Some(rest) = trimmed.strip_prefix("- else if ") {
             Content::ElseIf {
-                condition: rest.trim().to_string(),
+                condition: expression(rest)?,
                 contents: Vec::new(),
             }
         } else if trimmed == "- else" {
@@ -544,13 +521,12 @@ impl Html {
             }
         } else if let Some(rest) = trimmed.strip_prefix("- if ") {
             Content::If {
-                condition: rest.trim().to_string(),
+                condition: expression(rest)?,
                 contents: Vec::new(),
                 else_branch: None,
             }
         } else if let Some(rest) = trimmed.strip_prefix("| ") {
-            let escaped = rest.replace('\\', "\\\\").replace('"', "\\\"");
-            Content::Text(format!("\"{escaped}\""))
+            Content::Text(Value::Static(rest.to_string()))
         } else {
             return Ok(None);
         };
@@ -561,13 +537,11 @@ impl Html {
         let mut out = Vec::with_capacity(tokens.len());
         let mut iter = tokens.into_iter().peekable();
         while let Some(token) = iter.next() {
-            if matches!(token, Token::Punct('!'))
-                && matches!(iter.peek(), Some(Token::Group { .. }))
-            {
-                let Some(Token::Group { inner, .. }) = iter.next() else {
+            if matches!(token, Token::Punct('!')) && matches!(iter.peek(), Some(Token::Group(_))) {
+                let Some(Token::Group(group)) = iter.next() else {
                     unreachable!("group")
                 };
-                out.push(Token::RawGroup(inner));
+                out.push(Token::RawGroup(group.stream()));
             } else {
                 out.push(token);
             }
@@ -579,8 +553,8 @@ impl Html {
         let mut state = State::StandBy;
         let mut tag: Option<String> = None;
         let mut classes: Vec<String> = Vec::new();
-        let mut properties: Vec<(String, String)> = Vec::new();
-        let mut contents: Vec<(String, bool)> = Vec::new();
+        let mut properties: Vec<(String, Option<Value>)> = Vec::new();
+        let mut contents: Vec<Content> = Vec::new();
 
         for token in tokens {
             state = match (state, token) {
@@ -588,8 +562,12 @@ impl Html {
                     tag = Some(ident);
                     State::HasTag
                 }
-                (State::StandBy, Token::Literal(lit)) => State::Done(Content::Text(lit)),
-                (State::StandBy, Token::Group { inner, .. }) => State::Done(Content::Text(inner)),
+                (State::StandBy, Token::Literal(lit)) => {
+                    State::Done(Content::Text(Value::from_literal(lit)))
+                }
+                (State::StandBy, Token::Group(group)) => {
+                    State::Done(Content::Text(Value::from_tokens(group.stream())))
+                }
                 (State::StandBy, Token::RawGroup(group)) => State::Done(Content::RawText(group)),
                 (State::StandBy, Token::Punct('.')) => {
                     tag = Some("div".to_string());
@@ -606,50 +584,52 @@ impl Html {
                 }
                 (State::PropertyName(name), Token::Punct('=')) => State::PropertyValue(name),
                 (State::PropertyName(name), Token::Ident(ident)) => {
-                    properties.push((name, String::new()));
+                    properties.push((name, None));
                     State::PropertyName(Self::attr_name(&ident))
                 }
                 (State::PropertyName(name), Token::Punct('.')) => {
-                    properties.push((name, String::new()));
+                    properties.push((name, None));
                     State::ClassName
                 }
                 (State::PropertyName(name), Token::Punct('#')) => {
-                    properties.push((name, String::new()));
+                    properties.push((name, None));
                     State::Id
                 }
                 (State::PropertyName(name), Token::Literal(lit)) => {
-                    properties.push((name, String::new()));
-                    contents.push((lit, false));
+                    properties.push((name, None));
+                    contents.push(Content::Text(Value::from_literal(lit)));
                     State::HasTag
                 }
-                (State::PropertyName(name), Token::Group { inner, .. }) => {
-                    properties.push((name, String::new()));
-                    contents.push((inner, false));
+                (State::PropertyName(name), Token::Group(group)) => {
+                    properties.push((name, None));
+                    contents.push(Content::Text(Value::from_tokens(group.stream())));
                     State::HasTag
                 }
                 (State::PropertyName(name), Token::RawGroup(group)) => {
-                    properties.push((name, String::new()));
-                    contents.push((group, true));
+                    properties.push((name, None));
+                    contents.push(Content::RawText(group));
                     State::HasTag
                 }
                 (State::PropertyValue(name), Token::Literal(lit)) => {
-                    properties.push((name, lit));
+                    properties.push((name, Some(Value::from_literal(lit))));
                     State::HasTag
                 }
-                (State::PropertyValue(name), Token::Group { inner, .. }) => {
-                    properties.push((name, inner));
+                (State::PropertyValue(name), Token::Group(group)) => {
+                    let inner = group.stream();
+                    let value = (!inner.is_empty()).then(|| Value::from_tokens(inner));
+                    properties.push((name, value));
                     State::HasTag
                 }
                 (State::HasTag, Token::Literal(lit)) => {
-                    contents.push((lit, false));
+                    contents.push(Content::Text(Value::from_literal(lit)));
                     State::HasTag
                 }
-                (State::HasTag, Token::Group { inner, .. }) => {
-                    contents.push((inner, false));
+                (State::HasTag, Token::Group(group)) => {
+                    contents.push(Content::Text(Value::from_tokens(group.stream())));
                     State::HasTag
                 }
                 (State::HasTag, Token::RawGroup(group)) => {
-                    contents.push((group, true));
+                    contents.push(Content::RawText(group));
                     State::HasTag
                 }
                 (State::ClassName, Token::Ident(ident)) => {
@@ -657,7 +637,7 @@ impl Html {
                     State::HasTag
                 }
                 (State::Id, Token::Ident(ident)) => {
-                    properties.push(("id".to_string(), format!("\"{ident}\"")));
+                    properties.push(("id".to_string(), Some(Value::Static(ident))));
                     State::HasTag
                 }
                 (_, token) => return Err(format!("HTML: unexpected `{}`", token.describe())),
@@ -665,23 +645,13 @@ impl Html {
         }
 
         if let State::PropertyName(name) = state {
-            properties.push((name, String::new()));
+            properties.push((name, None));
             state = State::HasTag;
         }
         if let State::Done(content) = state {
             return Ok(content);
         }
         let tag = tag.ok_or_else(|| "HTML: line has no tag".to_string())?;
-        let contents = contents
-            .into_iter()
-            .map(|(text, raw)| {
-                if raw {
-                    Content::RawText(text)
-                } else {
-                    Content::Text(text)
-                }
-            })
-            .collect();
         Ok(Content::Element {
             tag,
             classes,

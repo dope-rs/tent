@@ -1,3 +1,5 @@
+use proc_macro2::Literal;
+
 pub(super) struct Text;
 
 impl Text {
@@ -14,8 +16,9 @@ impl Text {
         out
     }
 
-    pub(super) fn unquote(literal: &str) -> String {
-        Self::unescape(&literal[1..literal.len() - 1])
+    pub(super) fn unquote(literal: &Literal) -> Option<String> {
+        let text = literal.to_string();
+        Some(Self::unescape(text.strip_prefix('"')?.strip_suffix('"')?))
     }
 
     fn unescape(text: &str) -> String {

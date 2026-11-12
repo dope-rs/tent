@@ -112,14 +112,14 @@ impl Html for str {
                 }
             };
             if start < idx {
-                out.put_owned(&self[start..idx]);
+                out.put_owned(unsafe { self.get_unchecked(start..idx) });
             }
             out.put_static(replacement);
             idx += 1;
             start = idx;
         }
         if start < self.len() {
-            out.put_owned(&self[start..]);
+            out.put_owned(unsafe { self.get_unchecked(start..) });
         }
     }
 

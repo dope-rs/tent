@@ -103,9 +103,18 @@ fn html_static_output_appends_to_owned_string() {
 
 #[test]
 fn html_escapes_dynamic_text() {
-    let danger = "<b>";
-    let out = tent::html!("span (danger)");
-    assert_eq!(&*out, "<span>&lt;b&gt;</span>");
+    for (text, expected) in [
+        ("", "<span></span>"),
+        ("é漢🦀", "<span>é漢🦀</span>"),
+        ("'&<>\"", "<span>&#x27;&amp;&lt;&gt;&quot;</span>"),
+        (
+            "é&漢<🦀>é\"漢'🦀",
+            "<span>é&amp;漢&lt;🦀&gt;é&quot;漢&#x27;🦀</span>",
+        ),
+    ] {
+        assert_eq!(tent::html!("span (text)"), expected);
+        assert_eq!(tent::html_body!("span (text)").finish(), expected);
+    }
 }
 
 #[test]
@@ -122,6 +131,24 @@ fn html_if_else_branches() {
 }
 
 #[test]
+fn html_else_if_preserves_following_branch() {
+    let value = 1;
+    let out = tent::html!(
+        "div\n  - if value == 0\n    b \"zero\"\n  - else if value == 1\n    b \"one\"\n  - else\n    b \"other\"\n  - if value > 0\n    i \"positive\""
+    );
+    assert_eq!(out, "<div><b>one</b><i>positive</i></div>");
+}
+
+#[test]
+fn html_loads_nested_template() {
+    let out = tent::load_html!("tests/fixtures/basic.tent.html");
+    assert_eq!(
+        out,
+        "<html><head><title>Test Page</title></head><body><h1>Hello!</h1><p>World</p></body></html>"
+    );
+}
+
+#[test]
 fn css_nests_selectors() {
     let css: &str = tent::css!(".box\n  color: \"red\"");
     assert_eq!(css, ".box {color: red;}");
@@ -131,4 +158,29 @@ fn css_nests_selectors() {
 fn css_body_renders_static() {
     let body = tent::css_body!(".x\n  margin: \"0\"");
     assert_eq!(body.finish(), ".x {margin: 0;}");
+}
+
+#[test]
+fn html_grouped_expressions_preserve_tokens() {
+    let out = tent::html!(r#"p title=("<&".to_owned()) ("<&".to_owned())"#);
+    assert_eq!(out, "<p title=\"&lt;&amp;\">&lt;&amp;</p>");
+}
+
+#[test]
+fn html_grouped_literal_preserves_static_output() {
+    let out = tent::html!(
+        r#"p #value disabled empty="" title=() ("<&")
+| \n "raw""#
+    );
+    assert!(matches!(out, std::borrow::Cow::Borrowed(_)));
+    assert_eq!(
+        out,
+        "<p id=\"value\" disabled empty=\"\" title><&</p>\\n \"raw\""
+    );
+}
+
+#[test]
+fn html_literal_tokens_preserve_dynamic_and_raw_output() {
+    let out = tent::html!(r##"p r"<&" 42 !{"<b>"}"##);
+    assert_eq!(out, "<p>&lt;&amp;42<b></p>");
 }

@@ -1,4 +1,4 @@
-use proc_macro2::TokenStream;
+use proc_macro2::{Literal, TokenStream};
 use quote::quote;
 
 use crate::Language;
@@ -98,7 +98,7 @@ impl Item {
             Self::Declaration { property, value } => {
                 out.push_str(property);
                 out.push_str(": ");
-                out.push_str(&Text::unquote(value));
+                out.push_str(value);
                 out.push(';');
             }
         }
@@ -121,13 +121,16 @@ impl IndentNode for Node {
         self.item
     }
 
-    fn adopt(&mut self, children: Vec<Item>) {
+    fn try_adopt(&mut self, children: Vec<Item>) -> Result<(), String> {
         match &mut self.item {
             Item::Node { children: slot, .. } => *slot = children,
             Item::Declaration { property, .. } => {
-                panic!("CSS: declaration `{property}` cannot have children")
+                return Err(format!(
+                    "CSS: declaration `{property}` cannot have children"
+                ));
             }
         }
+        Ok(())
     }
 }
 
@@ -143,6 +146,9 @@ enum State {
 
 impl Node {
     fn parse(level: usize, tokens: Vec<Token>) -> Result<Self, String> {
+        let quoted = |literal: Literal| {
+            Text::unquote(&literal).ok_or_else(|| format!("CSS: unexpected `{literal}`"))
+        };
         let mut state = State::StandBy;
         for token in tokens {
             state = match (state, token) {
@@ -160,11 +166,11 @@ impl Node {
                 (State::DeclarationValue(property), Token::Literal(value)) => {
                     State::Done(Item::Declaration {
                         property: Text::camel_to_dashed(&property),
-                        value,
+                        value: quoted(value)?,
                     })
                 }
                 (State::Selector(prev), Token::Literal(lit)) => {
-                    State::Accumulated(format!("{prev} {}", Text::unquote(&lit)))
+                    State::Accumulated(format!("{prev} {}", quoted(lit)?))
                 }
                 (State::Selector(prev), Token::Ident(ident)) => {
                     State::Accumulated(format!("{prev} {ident}"))
@@ -187,10 +193,10 @@ impl Node {
                 (State::Punctuated(prev), Token::Punct(p)) => {
                     State::Punctuated(format!("{prev}{p}"))
                 }
-                (State::Selector(prev), Token::Group { delimited, .. })
-                | (State::Accumulated(prev), Token::Group { delimited, .. })
-                | (State::Punctuated(prev), Token::Group { delimited, .. }) => {
-                    State::Accumulated(format!("{prev}{delimited}"))
+                (State::Selector(prev), Token::Group(group))
+                | (State::Accumulated(prev), Token::Group(group))
+                | (State::Punctuated(prev), Token::Group(group)) => {
+                    State::Accumulated(format!("{prev}{group}"))
                 }
                 (_, token) => {
                     return Err(format!("CSS: unexpected `{}`", token.describe()));

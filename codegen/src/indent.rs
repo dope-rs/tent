@@ -3,42 +3,46 @@ pub(super) trait IndentNode: Sized {
 
     fn level(&self) -> usize;
     fn into_output(self) -> Self::Output;
-    fn adopt(&mut self, children: Vec<Self::Output>);
+    fn try_adopt(&mut self, children: Vec<Self::Output>) -> Result<(), String>;
 
-    fn finish_siblings(siblings: Vec<Self::Output>) -> Vec<Self::Output> {
-        siblings
+    fn try_finish_siblings(siblings: Vec<Self::Output>) -> Result<Vec<Self::Output>, String> {
+        Ok(siblings)
     }
 }
 
 pub(super) struct Indent;
 
 impl Indent {
-    pub(super) fn build<N: IndentNode>(nodes: Vec<N>) -> Vec<N::Output> {
+    pub(super) fn try_build<N: IndentNode>(nodes: Vec<N>) -> Result<Vec<N::Output>, String> {
         let mut stack: Vec<N> = Vec::new();
         let mut roots: Vec<N::Output> = Vec::new();
         for node in nodes {
             while stack.last().is_some_and(|top| node.level() < top.level()) {
-                Self::collapse(&mut stack, &mut roots);
+                Self::try_collapse(&mut stack, &mut roots)?;
             }
             stack.push(node);
         }
         while !stack.is_empty() {
-            Self::collapse(&mut stack, &mut roots);
+            Self::try_collapse(&mut stack, &mut roots)?;
         }
-        roots
+        Ok(roots)
     }
 
-    fn collapse<N: IndentNode>(stack: &mut Vec<N>, roots: &mut Vec<N::Output>) {
+    fn try_collapse<N: IndentNode>(
+        stack: &mut Vec<N>,
+        roots: &mut Vec<N::Output>,
+    ) -> Result<(), String> {
         let leaf_level = stack.last().unwrap().level();
         let mut siblings = Vec::new();
         while stack.last().is_some_and(|node| node.level() == leaf_level) {
             siblings.push(stack.pop().unwrap().into_output());
         }
         siblings.reverse();
-        let siblings = N::finish_siblings(siblings);
+        let siblings = N::try_finish_siblings(siblings)?;
         match stack.last_mut() {
-            Some(parent) => parent.adopt(siblings),
+            Some(parent) => parent.try_adopt(siblings)?,
             None => roots.extend(siblings),
         }
+        Ok(())
     }
 }
