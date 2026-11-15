@@ -87,7 +87,6 @@ impl Content {
         }
         let capacity = self.static_bytes();
         let output = Self::emit(
-            quote! { ::std::string::String },
             quote! { ::std::string::String::with_capacity(#capacity) },
             html,
             stmts,
@@ -95,17 +94,12 @@ impl Content {
         quote! { ::std::borrow::Cow::<'static, str>::Owned(#output) }
     }
 
-    fn emit(
-        ty: TokenStream,
-        output: TokenStream,
-        mut accum: String,
-        mut stmts: Vec<TokenStream>,
-    ) -> TokenStream {
+    fn emit(output: TokenStream, mut accum: String, mut stmts: Vec<TokenStream>) -> TokenStream {
         Self::flush(&mut accum, &mut stmts);
         quote_spanned! {Span::mixed_site()=>
             {
                 use ::tent::{Html as _, Sink as _};
-                let mut __tent: #ty = #output;
+                let mut __tent = #output;
                 #(#stmts)*
                 __tent
             }
@@ -119,7 +113,6 @@ impl Content {
         }
         let parts = self.parts().max(1);
         Self::emit(
-            quote! { ::tent::Body },
             quote! { ::tent::Body::with_capacity(#parts) },
             html,
             stmts,
@@ -479,12 +472,7 @@ impl Html {
         output: TokenStream,
     ) -> Result<TokenStream, String> {
         let (html, stmts) = Self::root(roots)?.statements();
-        Ok(Content::emit(
-            quote! { ::std::string::String },
-            output,
-            html,
-            stmts,
-        ))
+        Ok(Content::emit(output, html, stmts))
     }
 
     fn attr_name(name: &str) -> String {

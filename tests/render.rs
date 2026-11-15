@@ -95,10 +95,10 @@ fn html_output_binding_preserves_caller_names() {
 }
 
 #[test]
-fn html_static_output_appends_to_owned_string() {
-    let output = String::from("prefix");
+fn html_static_output_appends_to_sink() {
+    let output = tent::Body::from_static("prefix");
     let rendered = tent::html_into!("p \"text\"", output);
-    assert_eq!(rendered, "prefix<p>text</p>");
+    assert_eq!(rendered.finish(), "prefix<p>text</p>");
 }
 
 #[test]
