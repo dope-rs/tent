@@ -2,7 +2,7 @@
 members = ["codegen"]
 
 [workspace.package]
-version = "0.2.3"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.98"
 repository = "https://github.com/dope-rs/tent"
@@ -21,4 +21,4 @@ readme = "README.md"
 path = "src/lib.rs"
 
 [dependencies]
-tent_codegen = { path = "codegen", version = "=0.2.3" }
+tent_codegen = { path = "codegen", version = "=0.3.0" }
